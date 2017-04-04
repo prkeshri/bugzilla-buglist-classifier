@@ -82,7 +82,7 @@
 					var pi_si = pi * ss.length + si;
 
 					bugMap[pi_si]=bugMap[pi_si] || [];
-					bugMap[pi_si].push(bug);
+					bugMap[pi_si].push({id:bug,html:txt});
 
 					completed++;
 					if(completed==list.length) {
@@ -103,11 +103,11 @@
 
 	function getBugList() {
 		var trs='#bugzilla-body > table.bz_buglist > tbody> tr'
-		trs = $$(trs);
-		trs.shift(); // Header
+		trs = document.querySelectorAll(trs);
 		tbugs = {};
 		var list = [];
-		trs.forEach(function(tr){
+		trs.forEach(function(tr,i){
+			if(i==0) return; // Header
 			var tds = $$('td',tr);
 			var td_id = tds[0].textContent.trim();
 			var td_status_sel = tds[4];
@@ -121,6 +121,7 @@
 	}
 
 	function revampBugs(bugsInPriority) {
+		var self = this || {};
 		addJQuery(null, function(){
 
 			var trs='#bugzilla-body > table.bz_buglist > tbody> tr'
@@ -128,39 +129,105 @@
 			trs = $(trs);
 			var tr0 = trs[0];
 			var trsMap = {};
+			var trsTdsMap = {};
 			trs.each(function(i){
 				var tr= this;
 				if(i==0) return;
 				var tds = $('td',tr);
 				var td_id = tds[0].textContent.trim();
 				trsMap[td_id] = tr;
+				trsTdsMap[td_id] = tds;
 			});
 
 			var bugsSortedPriority = Object.keys(bugsInPriority).sort(function(x,y){ return x-y;});
 
 			var totalBugs = 0;
+			var trHead = $('tr.bz_buglist_header.bz_first_buglist_header');
+			if(trHead.text().indexOf('#') == -1) {
+				trHead.prepend('<th>#</th>');
+			}
+
 			var html = tr0.outerHTML+ bugsSortedPriority.map(
 				function(bugSortedPriority){
 					var bugs = bugsInPriority[bugSortedPriority];
-					var html = '<tr><td colspan="5"><b>'+ bugBugtypeMap[bugs[0]] +'</b></td></tr>';
-					html += bugs.map(function (bug){
+					var head = '<tr><td colspan="5"><b>'+ bugBugtypeMap[bugs[0].id] +'</b></td></tr>';
+					var bugTypeBugs = 0;
+					var html = bugs.map(function (bugObj){
+						var bug = bugObj.id;
 						if(trsMap[bug] && trsMap[bug].outerHTML) 
 						{
-							totalBugs++;
-							return (trsMap[bug] && trsMap[bug].outerHTML) ;
+							if(trsMap[bug]) {
+								if(self.filter && !self.filter(bugObj, trsMap[bug],trsTdsMap[bug])) {
+									return '';
+								}
+								var tdSl = "<td>" + (++totalBugs) + "/"+ (++bugTypeBugs) +"</td>";
+								var tr = $(trsMap[bug]);
+								tr.prepend(tdSl);
+								return tr.html();
+							}
 						}	
 						return '';
 					}).join('');
-					return html;
+					if(!html) return html;
+					return head+html;
 				} ).join('');
 			$('#bugzilla-body > table.bz_buglist > tbody').html(html);
-			$('.bz_result_count').text(totalBugs + ' bugs open!');
+			var bugsOpen = totalBugs + ' bugs open';
+			if(self.filter && self.filter.appendText) {
+				bugsOpen +=self.filter.appendText;
+			}
+			bugsOpen+='!';
+			$('.bz_result_count').text(bugsOpen);
 			console.log('Done!');
 		});
 	}
 
-	function createUI() {
+	function createUI(options) {
 		var list = getBugList();
-		prioritizeBugs.apply(revampBugs, list);
+		prioritizeBugs.apply(revampBugs.bind(options), list);
 		return 'Processing ...';
 	}
+
+var filters = {
+	since: function(since) {
+		var self = this;
+		since = since.toString();
+		var floatPart = parseFloat(since);
+		var currency = since.substr(floatPart.toString().length) || 'days';
+		currency = currency.trim();
+		var totalSince = floatPart; // assumed!
+		var cm = ['s',1,'m',60,'h',60,'d',24,'y',30*12];
+		var i=-1;
+		while(++i<cm.length) {
+			totalSince*= cm[i+1];
+			if(currency[0]==cm[i]) {
+				break;
+			}
+			i++;
+		}
+		//return totalSince;
+		totalSince*=1000; //ms
+		var now = new Date;
+		var filter = function(bug, tr, tds) {
+			var modifiedAt = bug.html.find('#bz_show_bug_column_2 > table > tbody > tr:nth-child(2) > td');
+			modifiedAt = modifiedAt.text().split('(')[0].trim();
+			var d = new Date(modifiedAt);
+			var diff = now - d ;
+			return (diff <= totalSince);
+		};
+		var diff = new Date(now - totalSince);
+		filter.appendText = ' since ' + diff;
+		return {filter: filter};
+	},
+	skipWhenReportedBy: function(emailHrefs) {
+		/*var emailHrefs = Array.prototype.slice.call(arguments);
+		*/emailHrefs = emailHrefs.map(function(email) {
+			return 'mailto:'+email;
+		})
+		const emailField = '#bz_show_bug_column_2 > table > tbody > tr:nth-child(1) > td > span > a';
+		return function(bug, tr, tds) {
+			var emailHref = bug.html.find(emailField).attr('href');
+			return emailHrefs.indexOf(emailHref) == -1;
+		}
+	}
+}
